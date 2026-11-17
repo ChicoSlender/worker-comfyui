@@ -14,6 +14,7 @@ import tempfile
 import socket
 import traceback
 import logging
+from typing import Optional
 
 from network_volume import (
     is_network_volume_debug_enabled,
@@ -95,6 +96,44 @@ MODEL_LIST_PLACEHOLDER = "__list__"
 
 # Cap how many available files an error message lists before truncating
 MAX_LISTED_MODELS = 15
+
+def upload_image_s3(
+    job_id,
+    image_location,
+    bucket_name: Optional[str] = None,
+):
+    """
+    Upload a single file to bucket storage.
+    """
+    image_name = str(uuid.uuid4())[:8]
+    boto_client, _ = rp_upload.get_boto_client()
+    file_extension = os.path.splitext(image_location)[1]
+    content_type = "image/" + file_extension.lstrip(".")
+
+    with open(image_location, "rb") as input_file:
+        output = input_file.read()
+
+    if boto_client is None:
+        # Save the output to a file using fallback helper
+        file_name_with_ext = f"{image_name}{file_extension}"
+        sim_upload_location = _save_to_local_fallback(
+            file_name_with_ext,
+            file_data=output,
+            directory="simulated_uploaded"
+        )
+
+        return sim_upload_location
+
+    bucket = bucket_name if bucket_name else time.strftime("%m-%y")
+    object_key = f"{job_id}/{image_name}{file_extension}"
+    boto_client.put_object(
+        Bucket=f"{bucket}",
+        Key=object_key,
+        Body=output,
+        ContentType=content_type,
+    )
+
+    return object_key
 
 # ---------------------------------------------------------------------------
 # Helper: quick reachability probe of ComfyUI HTTP endpoint (port 8188)
@@ -1035,17 +1074,18 @@ def handler(job):
                                 )
 
                                 print(f"worker-comfyui - Uploading {filename} to S3...")
-                                s3_url = rp_upload.upload_image(job_id, temp_file_path)
+                                bucket_name = os.environ.get("BUCKET_NAME")
+                                s3_key = upload_image_s3(job_id, temp_file_path, bucket_name = bucket_name)
                                 os.remove(temp_file_path)  # Clean up temp file
                                 print(
-                                    f"worker-comfyui - Uploaded {filename} to S3: {s3_url}"
+                                    f"worker-comfyui - Uploaded {filename} to S3: {s3_key}"
                                 )
                                 # Append dictionary with filename and URL
                                 output_data.append(
                                     {
                                         "filename": filename,
-                                        "type": "s3_url",
-                                        "data": s3_url,
+                                        "type": "s3_key",
+                                        "data": s3_key,
                                     }
                                 )
                             except Exception as e:
