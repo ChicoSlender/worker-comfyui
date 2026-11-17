@@ -94,6 +94,24 @@ RUN uv pip install torch==2.11.0 torchvision==0.26.0 torchaudio==2.11.0 \
        done \
     && uv pip install "transformers>=4.50.3,<5" "huggingface-hub<1.0"
 
+# ComfyS3 custom node (provides LoadImageS3 / SaveImageS3, used by e.g.
+# example_wk_invert.json). Cloned at a pinned commit and its requirements
+# installed straight into /opt/venv (the venv start.sh launches ComfyUI with),
+# in its own layer so changing it doesn't invalidate the torch layer above.
+# Its requirements.txt pins boto3==1.34.32, but the runpod SDK installed below
+# needs boto3>=1.43.118, so install its deps unpinned instead of from the file.
+# The repo ships a placeholder .env; python-dotenv would load those dummy
+# values for any S3_* var not set in the container env, so delete it — config
+# comes solely from container env vars: S3_REGION, S3_ACCESS_KEY,
+# S3_SECRET_KEY, S3_BUCKET_NAME, S3_INPUT_DIR, S3_OUTPUT_DIR and optionally
+# S3_ENDPOINT_URL / S3_ADDRESSING_STYLE. They must be set when ComfyUI starts:
+# the node creates its S3 client at import time.
+ARG COMFYS3_COMMIT=1efc620180676cdc122957b4a3afbc5ae176f324
+RUN git clone https://github.com/TemryL/ComfyS3 /comfyui/custom_nodes/ComfyS3 \
+    && git -C /comfyui/custom_nodes/ComfyS3 checkout "${COMFYS3_COMMIT}" \
+    && rm -rf /comfyui/custom_nodes/ComfyS3/.git /comfyui/custom_nodes/ComfyS3/.env \
+    && uv pip install boto3 python-dotenv
+
 # Build-time smoke test: actually start ComfyUI (imports the full node graph) so
 # a startup-breaking dependency is caught HERE, at build time, instead of as a
 # runtime "server not reachable" failure on a live worker. Runs on CPU — no GPU
