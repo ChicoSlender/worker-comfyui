@@ -1,5 +1,6 @@
 import runpod
-from runpod.serverless.utils import rp_upload
+import boto3
+from botocore.config import Config as BotoConfig
 import json
 import urllib.request
 import urllib.parse
@@ -14,7 +15,6 @@ import tempfile
 import socket
 import traceback
 import logging
-from typing import Optional
 
 from network_volume import (
     is_network_volume_debug_enabled,
@@ -97,37 +97,61 @@ MODEL_LIST_PLACEHOLDER = "__list__"
 # Cap how many available files an error message lists before truncating
 MAX_LISTED_MODELS = 15
 
-def upload_image_s3(
-    job_id,
-    image_location,
-    bucket_name: Optional[str] = None,
-):
+def get_s3_target():
     """
-    Upload a single file to bucket storage.
+    Build an S3 client for the output bucket from BUCKET_NAME, BUCKET_REGION,
+    BUCKET_ACCESS_KEY_ID and BUCKET_SECRET_ACCESS_KEY.
+
+    No endpoint_url is passed, so boto3 uses the standard regional AWS
+    endpoint and objects land at exactly the key passed to put_object.
     """
+    bucket = os.environ.get("BUCKET_NAME")
+    region = os.environ.get("BUCKET_REGION")
+    access_key_id = os.environ.get("BUCKET_ACCESS_KEY_ID")
+    secret_access_key = os.environ.get("BUCKET_SECRET_ACCESS_KEY")
+    missing = [
+        name
+        for name, value in (
+            ("BUCKET_NAME", bucket),
+            ("BUCKET_REGION", region),
+            ("BUCKET_ACCESS_KEY_ID", access_key_id),
+            ("BUCKET_SECRET_ACCESS_KEY", secret_access_key),
+        )
+        if not value
+    ]
+    if missing:
+        raise ValueError(f"S3 upload is missing env vars: {', '.join(missing)}")
+
+    client = boto3.client(
+        "s3",
+        region_name=region,
+        aws_access_key_id=access_key_id,
+        aws_secret_access_key=secret_access_key,
+        config=BotoConfig(
+            signature_version="s3v4",
+            retries={"max_attempts": 3, "mode": "standard"},
+        ),
+    )
+    return client, bucket
+
+
+def upload_image_s3(job_id, image_location):
+    """
+    Upload a single file to the bucket named in BUCKET_NAME.
+
+    Returns the object key, which is "<job_id>/<random>.<ext>".
+    """
+    boto_client, bucket = get_s3_target()
     image_name = str(uuid.uuid4())[:8]
-    boto_client, _ = rp_upload.get_boto_client()
     file_extension = os.path.splitext(image_location)[1]
     content_type = "image/" + file_extension.lstrip(".")
 
     with open(image_location, "rb") as input_file:
         output = input_file.read()
 
-    if boto_client is None:
-        # Save the output to a file using fallback helper
-        file_name_with_ext = f"{image_name}{file_extension}"
-        sim_upload_location = _save_to_local_fallback(
-            file_name_with_ext,
-            file_data=output,
-            directory="simulated_uploaded"
-        )
-
-        return sim_upload_location
-
-    bucket = bucket_name if bucket_name else time.strftime("%m-%y")
     object_key = f"{job_id}/{image_name}{file_extension}"
     boto_client.put_object(
-        Bucket=f"{bucket}",
+        Bucket=bucket,
         Key=object_key,
         Body=output,
         ContentType=content_type,
@@ -1062,7 +1086,7 @@ def handler(job):
                     if image_bytes:
                         file_extension = os.path.splitext(filename)[1] or ".png"
 
-                        if os.environ.get("BUCKET_ENDPOINT_URL"):
+                        if os.environ.get("BUCKET_NAME"):
                             try:
                                 with tempfile.NamedTemporaryFile(
                                     suffix=file_extension, delete=False
@@ -1074,8 +1098,7 @@ def handler(job):
                                 )
 
                                 print(f"worker-comfyui - Uploading {filename} to S3...")
-                                bucket_name = os.environ.get("BUCKET_NAME")
-                                s3_key = upload_image_s3(job_id, temp_file_path, bucket_name = bucket_name)
+                                s3_key = upload_image_s3(job_id, temp_file_path)
                                 os.remove(temp_file_path)  # Clean up temp file
                                 print(
                                     f"worker-comfyui - Uploaded {filename} to S3: {s3_key}"
