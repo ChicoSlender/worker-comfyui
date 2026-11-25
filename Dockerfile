@@ -112,6 +112,11 @@ RUN git clone https://github.com/TemryL/ComfyS3 /comfyui/custom_nodes/ComfyS3 \
     && rm -rf /comfyui/custom_nodes/ComfyS3/.git /comfyui/custom_nodes/ComfyS3/.env \
     && uv pip install boto3 python-dotenv
 
+# Default the S3 dirs to "" (bucket root). Runpod drops env vars with empty
+# values, and ComfyS3 crashes on os.path.join(None, ...) when they're unset.
+# A non-empty value set on the endpoint still overrides these.
+ENV S3_INPUT_DIR="" S3_OUTPUT_DIR=""
+
 # Build-time smoke test: actually start ComfyUI (imports the full node graph) so
 # a startup-breaking dependency is caught HERE, at build time, instead of as a
 # runtime "server not reachable" failure on a live worker. Runs on CPU — no GPU
